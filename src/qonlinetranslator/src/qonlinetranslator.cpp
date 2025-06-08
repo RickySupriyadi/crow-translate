@@ -8,6 +8,7 @@
 #include "qonlinetranslator.h"
 
 #include "qonlinetts.h"
+#include "settings/appsettings.h" // Crucial for AppSettings().geminiApiKey()
 
 #include <QCoreApplication>
 #include <QFinalState>
@@ -230,6 +231,17 @@ void QOnlineTranslator::translate(const QString &text, Engine engine, Language t
 
         buildLingvaStateMachine();
         break;
+    case Gemini:
+        // Check for API key before building state machine
+        // This check is also in requestGeminiTranslate, but good to have early exit.
+        // API key will be loaded from settings in a later step. For now, m_geminiApiKey is used.
+        // if (AppSettings().geminiApiKey().isEmpty()) { // Placeholder for actual settings call
+        //     resetData(ParametersError, tr("Gemini API key is not set."));
+        //     emit finished();
+        //     return;
+        // }
+        buildGeminiStateMachine();
+        break;
     }
 
     m_stateMachine->start();
@@ -273,6 +285,17 @@ void QOnlineTranslator::detectLanguage(const QString &text, Engine engine)
         }
 
         buildLingvaDetectStateMachine();
+        break;
+    case Gemini:
+        // The error for 'Auto' language is already handled before this switch in detectLanguage.
+        // If we reach here, it means a specific engine (Gemini) was requested for detection.
+        // For now, we call the minimal detect state machine.
+        // if (AppSettings().geminiApiKey().isEmpty()) { // Placeholder
+        //     resetData(ParametersError, tr("Gemini API key is not set."));
+        //     emit finished();
+        //     return;
+        // }
+        buildGeminiDetectStateMachine();
         break;
     }
 
@@ -445,6 +468,8 @@ void QOnlineTranslator::setEngineUrl(Engine engine, QString url)
     case Lingva:
         m_lingvaUrl = qMove(url);
         break;
+    case Gemini: // New case
+        break; // Gemini uses a fixed API endpoint
     default:
         break;
     }
@@ -456,6 +481,8 @@ void QOnlineTranslator::setEngineApiKey(Engine engine, QByteArray apiKey)
     case LibreTranslate:
         m_libreApiKey = qMove(apiKey);
         break;
+    case Gemini: // New case
+        break; // Gemini API key is handled differently (e.g. in AppSettings)
     default:
         break;
     }
@@ -1179,6 +1206,17 @@ bool QOnlineTranslator::isSupportTranslation(Engine engine, Language lang)
             break;
         }
         break;
+    case Gemini: // New case
+        switch (lang) {
+        case NoLanguage:
+        case Auto: // 'Auto' itself is not a language to be supported by an engine directly
+            isSupported = false;
+            break;
+        default:
+            isSupported = true; // Assume Gemini handles most languages via prompt
+            break;
+        }
+        break;
     }
 
     return isSupported;
@@ -1697,6 +1735,49 @@ void QOnlineTranslator::requestLingvaTranslate()
     m_currentReply = m_networkManager->get(QNetworkRequest(url));
 }
 
+void QOnlineTranslator::requestGeminiTranslate()
+{
+    const QString sourceText = sender()->property(s_textProperty).toString();
+    // QByteArray apiKey = m_geminiApiKey; // Remove this
+    QByteArray apiKey = AppSettings().geminiApiKey(); // Add this
+    if (apiKey.isEmpty()) {
+        resetData(ParametersError, tr("Gemini API key is not set. Please set it in the settings."));
+        emit finished(); // Ensure state machine stops
+        return;
+    }
+
+    QUrl url(QStringLiteral("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("key"), QString::fromUtf8(apiKey)); // Ensure apiKey is used
+    url.setQuery(query);
+
+    QJsonObject requestPayload;
+    QJsonArray contentsArray;
+    QJsonObject contentObject;
+    QJsonArray partsArray;
+    QJsonObject partObject;
+
+    QString prompt = QString("Translate the following text from %1 to %2: %3")
+                         .arg(languageName(m_sourceLang),
+                              languageName(m_translationLang),
+                              sourceText);
+    partObject.insert(QStringLiteral("text"), prompt);
+    partsArray.append(partObject);
+    contentObject.insert(QStringLiteral("parts"), partsArray);
+    contentsArray.append(contentObject);
+    requestPayload.insert(QStringLiteral("contents"), contentsArray);
+
+    // Optional: Add generationConfig if needed, e.g., to control output
+    // QJsonObject generationConfig;
+    // generationConfig.insert(QStringLiteral("temperature"), 0.7); // Example
+    // requestPayload.insert(QStringLiteral("generationConfig"), generationConfig);
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    m_currentReply = m_networkManager->post(request, QJsonDocument(requestPayload).toJson());
+}
+
 void QOnlineTranslator::parseLingvaTranslate()
 {
     m_currentReply->deleteLater();
@@ -1756,6 +1837,76 @@ void QOnlineTranslator::parseLingvaTranslate()
             }
         }
     }
+}
+
+void QOnlineTranslator::parseGeminiTranslate()
+{
+    m_currentReply->deleteLater();
+
+    if (m_currentReply->error() != QNetworkReply::NoError) {
+        resetData(NetworkError, m_currentReply->errorString());
+        return;
+    }
+
+    const QByteArray data = m_currentReply->readAll();
+    const QJsonDocument jsonResponse = QJsonDocument::fromJson(data);
+    const QJsonObject responseObject = jsonResponse.object();
+
+    if (responseObject.isEmpty()) {
+        resetData(ParsingError, tr("Error: Empty response from Gemini API."));
+        return;
+    }
+
+    if (responseObject.contains(QStringLiteral("error"))) {
+        QJsonObject errorObj = responseObject.value(QStringLiteral("error")).toObject();
+        QString errorMessage = errorObj.value(QStringLiteral("message")).toString();
+        resetData(ServiceError, tr("Gemini API Error: %1").arg(errorMessage));
+        return;
+    }
+
+    const QJsonArray candidatesArray = responseObject.value(QStringLiteral("candidates")).toArray();
+    if (candidatesArray.isEmpty()) {
+        // Check for promptFeedback if candidates are empty
+        if (responseObject.contains(QStringLiteral("promptFeedback"))) {
+            QJsonObject promptFeedback = responseObject.value(QStringLiteral("promptFeedback")).toObject();
+            QString blockReason = promptFeedback.value(QStringLiteral("blockReason")).toString();
+            if (!blockReason.isEmpty()) {
+                resetData(ServiceError, tr("Gemini Error: Prompt was blocked. Reason: %1").arg(blockReason));
+                return;
+            }
+        }
+        resetData(ParsingError, tr("Error: No candidates found in Gemini response."));
+        return;
+    }
+
+    const QJsonObject firstCandidate = candidatesArray.first().toObject();
+    // Check finishReason
+    QString finishReason = firstCandidate.value(QStringLiteral("finishReason")).toString();
+    if (finishReason != QStringLiteral("STOP") && finishReason != QStringLiteral("MAX_TOKENS") && !finishReason.isEmpty()) {
+         // MAX_TOKENS can be a valid finish, but others might indicate issues.
+        if (finishReason == QStringLiteral("SAFETY")) {
+             resetData(ServiceError, tr("Gemini Error: Content generation stopped due to safety settings."));
+             return;
+        } else if (finishReason == QStringLiteral("RECITATION")) {
+             resetData(ServiceError, tr("Gemini Error: Content generation stopped due to recitation policy."));
+             return;
+        } else if (finishReason != QStringLiteral("MAX_TOKENS")) { // Allow MAX_TOKENS as it might still have partial good output
+             resetData(ServiceError, tr("Gemini Error: Content generation stopped. Reason: %1").arg(finishReason));
+             return;
+        }
+    }
+
+    const QJsonObject contentObject = firstCandidate.value(QStringLiteral("content")).toObject();
+    const QJsonArray partsArray = contentObject.value(QStringLiteral("parts")).toArray();
+    if (partsArray.isEmpty()) {
+        resetData(ParsingError, tr("Error: No parts found in Gemini response content."));
+        return;
+    }
+
+    m_translation = partsArray.first().toObject().value(QStringLiteral("text")).toString();
+
+    // Gemini doesn't provide separate transliteration or dictionary by default with this basic prompt.
+    // m_sourceTranslit, m_translationTranslit, m_translationOptions, m_examples remain empty.
 }
 
 void QOnlineTranslator::buildGoogleStateMachine()
@@ -1927,6 +2078,41 @@ void QOnlineTranslator::buildLingvaStateMachine()
 
     // Setup translation state
     buildSplitNetworkRequest(translationState, &QOnlineTranslator::requestLingvaTranslate, &QOnlineTranslator::parseLingvaTranslate, m_source, s_googleTranslateLimit);
+}
+
+void QOnlineTranslator::buildGeminiStateMachine()
+{
+    // For Gemini, it's a single request-response for basic translation.
+    // No complex chain of requests for translit, dictionary etc. like Yandex/Bing.
+    auto *translationState = new QState(m_stateMachine);
+    auto *finalState = new QFinalState(m_stateMachine);
+    m_stateMachine->setInitialState(translationState);
+
+    // Using buildNetworkRequestState for a single step.
+    // The text limit for Gemini is large, so splitting might not be immediately necessary for typical inputs,
+    // but for very large texts, it would be. For now, assume text fits.
+    // The s_googleTranslateLimit is a placeholder; Gemini's limits are different (e.g. 32k tokens for Flash).
+    // We are not using buildSplitNetworkRequest for simplicity here.
+    buildNetworkRequestState(translationState, &QOnlineTranslator::requestGeminiTranslate, &QOnlineTranslator::parseGeminiTranslate, m_source);
+    translationState->addTransition(translationState, &QState::finished, finalState);
+}
+
+void QOnlineTranslator::buildGeminiDetectStateMachine()
+{
+    // As discussed, direct language detection via a simple Gemini call is not standard.
+    // This would require a prompt like "Detect the language of the following text: ..."
+    // and parsing that specific response.
+    // For now, this state machine will do nothing or report an error.
+    // The error is already handled in detectLanguage() if Auto is selected for Gemini.
+    auto *initialState = new QState(m_stateMachine);
+    auto *finalState = new QFinalState(m_stateMachine);
+    m_stateMachine->setInitialState(initialState);
+    initialState->addTransition(initialState, &QState::entered, finalState); // Immediately finish.
+    // Or, alternatively, it could call a method that sets an appropriate error.
+    // connect(initialState, &QState::entered, this, [this](){
+    //     resetData(ParametersError, tr("Language detection with Gemini requires a specific prompt structure not yet implemented."));
+    //     emit finished();
+    // });
 }
 
 void QOnlineTranslator::buildLingvaDetectStateMachine()
@@ -2110,6 +2296,8 @@ bool QOnlineTranslator::isSupportTranslit(Engine engine, Language lang)
         }
     case LibreTranslate: // LibreTranslate doesn't support translit
         return false;
+    case Gemini: // New case
+        return false; // Gemini does not have dedicated translit support like others
     }
 
     return false;
@@ -2373,6 +2561,8 @@ bool QOnlineTranslator::isSupportDictionary(Engine engine, Language sourceLang, 
     case LibreTranslate: // LibreTranslate doesn't support dictinaries
     case Lingva: // Although Lingvo is a frontend to Google Translate, it doesn't support dictionaries
         return false;
+    case Gemini: // New case
+        return false; // Gemini does not have dedicated dictionary support
     }
 
     return false;
@@ -2395,6 +2585,8 @@ QString QOnlineTranslator::languageApiCode(Engine engine, Language lang)
         return s_genericLanguageCodes.value(lang);
     case Lingva:
         return s_lingvaLanguageCodes.value(lang, s_genericLanguageCodes.value(lang));
+    case Gemini: // New case
+        return s_genericLanguageCodes.value(lang); // Or return an empty QString(), as it's part of the prompt
     }
 
     Q_UNREACHABLE();

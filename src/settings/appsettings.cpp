@@ -575,6 +575,21 @@ QByteArray AppSettings::defaultEngineApiKey(QOnlineTranslator::Engine engine)
     }
 }
 
+QByteArray AppSettings::geminiApiKey() const
+{
+    return m_settings->value(QStringLiteral("Translation/GeminiApiKey"), defaultGeminiApiKey()).toByteArray();
+}
+
+void AppSettings::setGeminiApiKey(const QByteArray &apiKey)
+{
+    m_settings->setValue(QStringLiteral("Translation/GeminiApiKey"), apiKey);
+}
+
+QByteArray AppSettings::defaultGeminiApiKey()
+{
+    return {}; // Default is an empty API key
+}
+
 QOnlineTts::Voice AppSettings::voice(QOnlineTranslator::Engine engine) const
 {
     switch (engine) {

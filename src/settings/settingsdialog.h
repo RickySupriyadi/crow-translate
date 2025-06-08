@@ -11,6 +11,7 @@
 #include "qonlinetts.h"
 
 #include <QDialog>
+#include <QLineEdit> // Add this include
 
 class MainWindow;
 class AbstractAutostartManager;
@@ -90,6 +91,7 @@ private:
     void speakTestText(QOnlineTranslator &translator, QOnlineTranslator::Engine engine);
 
     Ui::SettingsDialog *ui;
+    QLineEdit *m_geminiApiKeyLineEdit; // Add this line
 
     // Manage platform-dependant autostart
     AbstractAutostartManager *m_autostartManager;

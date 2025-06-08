@@ -201,6 +201,10 @@ public:
     void setEngineApiKey(QOnlineTranslator::Engine engine, const QByteArray &apiKey);
     static QByteArray defaultEngineApiKey(QOnlineTranslator::Engine engine);
 
+    QByteArray geminiApiKey() const;
+    void setGeminiApiKey(const QByteArray &apiKey);
+    static QByteArray defaultGeminiApiKey();
+
     // Speech synthesis settings
     QOnlineTts::Voice voice(QOnlineTranslator::Engine engine) const;
     void setVoice(QOnlineTranslator::Engine engine, QOnlineTts::Voice voice);

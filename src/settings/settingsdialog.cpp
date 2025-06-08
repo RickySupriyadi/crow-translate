@@ -10,6 +10,11 @@
 
 #include "languagebuttonswidget.h"
 #include "mainwindow.h"
+#include <QLabel>
+#include <QLineEdit>
+#include <QFormLayout>
+#include <QGroupBox> // Potentially for finding group boxes
+#include <QDebug> // For qWarning
 #include "qhotkey.h"
 #include "screenwatcher.h"
 #include "trayicon.h"
@@ -168,6 +173,84 @@ SettingsDialog::SettingsDialog(MainWindow *parent)
     if ((date.month() == 12 && date.day() == 31) || (date.month() == 1 && date.day() == 1))
         ui->yandexTestSpeechEdit->setText(tr("Happy New Year!"));
 
+    // Add Gemini API Key input to the "Engines" Page (ui->enginesPage)
+    // Assuming ui->enginesPage uses a QFormLayout. If not, adapt to the correct layout.
+    // Look for where libreTranslateApiKeyTextEdit or lingvaUrlComboBox are.
+    // They appear to be directly on ui->enginesPage, likely in a QFormLayout.
+    // Let's assume ui->enginesPage->layout() is a QFormLayout.
+    auto *enginesLayout = qobject_cast<QFormLayout *>(ui->enginesPage->layout());
+    if (!enginesLayout) {
+        // If it's not directly on enginesPage, it might be in a groupbox within enginesPage
+        // This part might need adjustment based on the actual structure if the direct cast fails.
+        // For example, find a groupbox like ui->libreTranslateGroupBox if it exists.
+        // For now, we'll proceed assuming a direct QFormLayout on ui->enginesPage or we'll create one if null.
+        // However, looking at the UI structure from other settings, elements are added to specific group boxes.
+        // The translation engine settings (LibreTranslate URL, API key, Lingva URL) are within `ui->enginesGroupBox` based on typical UI design.
+        // Let's find the enginesGroupBox. It seems it's not explicitly named `enginesGroupBox` in the provided cpp,
+        // but elements like `ui->libreTranslateUrlComboBox` are directly accessed.
+        // The translation settings tab is `ui->translationPage`. The specific group for engine URLs/keys is not obvious from the code.
+        // Let's assume they are within a QGroupBox on the `ui->translationPage` or `ui->enginesPage`.
+        // Given `ui->libreTranslateApiKeyTextEdit` is used in `accept()`, it's part of the .ui file.
+        // We will add our QLineEdit in a similar fashion, programmatically.
+        // Let's try to add it to the layout of `ui->libreTranslateApiKeyTextEdit`'s parent, assuming it's a form layout.
+
+        QWidget* apiKeyParentWidget = ui->libreTranslateApiKeyTextEdit->parentWidget(); // Or another relevant widget in the engines section
+        QFormLayout *targetLayout = nullptr;
+        if (apiKeyParentWidget) {
+           targetLayout = qobject_cast<QFormLayout*>(apiKeyParentWidget->layout());
+        }
+
+        if (targetLayout) {
+            QLabel *geminiApiKeyLabel = new QLabel(tr("Gemini API Key:"), this);
+            m_geminiApiKeyLineEdit = new QLineEdit(this);
+            geminiApiKeyLabel->setBuddy(m_geminiApiKeyLineEdit);
+            // Insert after Lingva URL or Libre API Key
+            // Find Lingva URL combo box to insert after it.
+            int lingvaRow = -1;
+            for (int i = 0; i < targetLayout->rowCount(); ++i) {
+                if (targetLayout->itemAt(i, QFormLayout::FieldRole) && targetLayout->itemAt(i, QFormLayout::FieldRole)->widget() == ui->lingvaUrlComboBox) {
+                    lingvaRow = i;
+                    break;
+                }
+            }
+            if (lingvaRow != -1) {
+                targetLayout->insertRow(lingvaRow + 1, geminiApiKeyLabel, m_geminiApiKeyLineEdit);
+            } else { // Fallback: add at the end
+                targetLayout->addRow(geminiApiKeyLabel, m_geminiApiKeyLineEdit);
+            }
+        } else {
+            qWarning("Could not find a suitable QFormLayout to add Gemini API key setting on libreTranslateApiKeyTextEdit parent.");
+            // Fallback: Create a new group box if necessary, or add to a main layout as a last resort.
+            // For now, this warning will indicate if the layout assumption was wrong.
+            // If ui->enginesPage exists and has a layout:
+            if(ui->enginesPage && ui->enginesPage->layout()) {
+               qWarning("Attempting to add Gemini API Key to ui->enginesPage layout directly.");
+               QLabel *geminiApiKeyLabel = new QLabel(tr("Gemini API Key:"), this);
+               m_geminiApiKeyLineEdit = new QLineEdit(this);
+               geminiApiKeyLabel->setBuddy(m_geminiApiKeyLineEdit);
+               // Attempt to cast to QFormLayout, if it fails, it's not a QFormLayout.
+               QFormLayout* enginesFormLayout = qobject_cast<QFormLayout*>(ui->enginesPage->layout());
+               if (enginesFormLayout) {
+                   enginesFormLayout->addRow(geminiApiKeyLabel, m_geminiApiKeyLineEdit);
+               } else {
+                   qWarning("ui->enginesPage->layout() is not a QFormLayout. Adding as simple widget.");
+                   ui->enginesPage->layout()->addWidget(geminiApiKeyLabel);
+                   ui->enginesPage->layout()->addWidget(m_geminiApiKeyLineEdit);
+               }
+            } else {
+               qWarning("ui->enginesPage or its layout not found. Gemini API key field will be invisible.");
+               // If all else fails, create a line edit but it won't be visible without further layout work.
+               m_geminiApiKeyLineEdit = new QLineEdit(this);
+               m_geminiApiKeyLineEdit->setVisible(false); // Hide if layout not found
+            }
+        }
+    } else { // enginesLayout was directly found on ui->enginesPage
+        QLabel *geminiApiKeyLabel = new QLabel(tr("Gemini API Key:"), this);
+        m_geminiApiKeyLineEdit = new QLineEdit(this);
+        geminiApiKeyLabel->setBuddy(m_geminiApiKeyLineEdit);
+        enginesLayout->addRow(geminiApiKeyLabel, m_geminiApiKeyLineEdit);
+    }
+
     loadSettings();
 }
 
@@ -242,6 +325,7 @@ void SettingsDialog::accept()
     settings.setEngineUrl(QOnlineTranslator::LibreTranslate, ui->libreTranslateUrlComboBox->currentText());
     settings.setEngineApiKey(QOnlineTranslator::LibreTranslate, ui->libreTranslateApiKeyTextEdit->text().toUtf8());
     settings.setEngineUrl(QOnlineTranslator::Lingva, ui->lingvaUrlComboBox->currentText());
+    settings.setGeminiApiKey(m_geminiApiKeyLineEdit->text().toUtf8()); // Add this line
 
     // OCR
     settings.setConvertLineBreaks(ui->convertLineBreaksCheckBox->isChecked());
@@ -553,6 +637,7 @@ void SettingsDialog::restoreDefaults()
     ui->libreTranslateUrlComboBox->setCurrentText(AppSettings::defaultEngineUrl(QOnlineTranslator::LibreTranslate));
     ui->libreTranslateApiKeyTextEdit->setText(AppSettings::defaultEngineApiKey(QOnlineTranslator::LibreTranslate));
     ui->lingvaUrlComboBox->setCurrentText(AppSettings::defaultEngineUrl(QOnlineTranslator::Lingva));
+    if (m_geminiApiKeyLineEdit) m_geminiApiKeyLineEdit->setText(AppSettings::defaultGeminiApiKey()); // Add this line
 
     // OCR
     ui->convertLineBreaksCheckBox->setChecked(AppSettings::defaultConvertLineBreaks());
@@ -664,6 +749,7 @@ void SettingsDialog::loadSettings()
     ui->libreTranslateUrlComboBox->setCurrentText(settings.engineUrl(QOnlineTranslator::LibreTranslate));
     ui->libreTranslateApiKeyTextEdit->setText(settings.engineApiKey(QOnlineTranslator::LibreTranslate));
     ui->lingvaUrlComboBox->setCurrentText(settings.engineUrl(QOnlineTranslator::Lingva));
+    if (m_geminiApiKeyLineEdit) m_geminiApiKeyLineEdit->setText(settings.geminiApiKey()); // Add this line
 
     // OCR
     ui->convertLineBreaksCheckBox->setChecked(settings.isConvertLineBreaks());
